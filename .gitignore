@@ -1,0 +1,18 @@
+# The phrase the slider types. Personal by definition — never commit it.
+phrase.txt
+
+# Compiled Swift helpers. Built locally by ./install.sh, and they must be
+# built locally anyway: macOS ties the Accessibility grant to the binary.
+bin/
+
+# macOS / Python / editor noise
+.DS_Store
+.metadata_never_index
+__pycache__/
+*.py[cod]
+.venv/
+.vscode/
+.idea/
+
+# local logs, if anyone runs the server with output redirected here
+*.log

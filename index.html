@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#070a08">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>DeskNook</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #070a08;
+    --panel: #0c120e;
+    --line: #18251c;
+    --fg: #d9ffe6;
+    --dim: #4f6b59;
+    --faint: #2e4336;
+    --accent: #6dff9e;
+    --warn: #ffd166;
+    --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  .hero, .grid > *, .procs { min-width: 0; }
+  canvas { min-width: 0; max-width: 100%; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    padding: calc(14px + env(safe-area-inset-top)) 16px calc(8px + env(safe-area-inset-bottom));
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 100dvh;
+    overflow-x: hidden;
+    overscroll-behavior: none;
+    touch-action: manipulation;
+  }
+  .warn { color: var(--warn); }
+  .bad  { color: var(--bad); }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    font-size: 11px;
+    letter-spacing: .14em;
+    color: var(--dim);
+    text-transform: uppercase;
+    padding: 2px 2px 0;
+  }
+  header .host {
+    color: var(--accent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  header .dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 7px;
+    vertical-align: 1px;
+    box-shadow: 0 0 8px var(--accent);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+  body.offline header .dot { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+  body.offline header .host { color: var(--bad); }
+  #clock { flex: none; transition: opacity .2s; }
+  body[data-view="clock"] #clock { opacity: 0; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px 16px;
+  }
+  .label {
+    font-size: 10px;
+    letter-spacing: .18em;
+    color: var(--dim);
+    text-transform: uppercase;
+  }
+
+  .view { display: none; flex: 1; min-height: 0; }
+
+  /* ---------- clock ---------- */
+  #clockview {
+    position: relative;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 6px;
+    overflow: hidden;
+  }
+  #clockview::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle 260px at 50% 46%, rgba(109,255,158,.07), transparent 72%);
+    pointer-events: none;
+  }
+  .bigtime {
+    position: relative;
+    font-size: clamp(84px, 29vw, 210px);
+    line-height: .9;
+    font-weight: 500;
+    letter-spacing: -.06em;
+    color: var(--fg);
+    text-shadow: 0 0 60px rgba(109,255,158,.18);
+  }
+  .bigtime .secs {
+    font-size: .15em;
+    font-weight: 400;
+    letter-spacing: 0;
+    color: var(--dim);
+    margin-left: .18em;
+    vertical-align: .55em;
+  }
+  .clockdate {
+    position: relative;
+    font-size: 12px;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-top: 10px;
+  }
+  .clockmeta {
+    position: relative;
+    display: flex;
+    gap: 18px;
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    color: var(--faint);
+    text-transform: uppercase;
+    margin-top: 4px;
+  }
+  .minutebar {
+    position: relative;
+    width: min(240px, 62vw);
+    height: 2px;
+    background: #12201605;
+    background-color: #142019;
+    border-radius: 2px;
+    margin-top: 26px;
+    overflow: hidden;
+  }
+  .minutebar i {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    opacity: .55;
+    border-radius: 2px;
+  }
+
+  .microw {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    margin-top: 28px;
+    flex: 0 0 auto;
+  }
+  #clockview .microw > * { flex: 0 0 auto; }
+
+  .mic {
+    position: relative;
+    width: 56px;
+    height: 56px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--dim);
+    cursor: pointer;
+    transition: color .2s, border-color .2s, box-shadow .2s, transform .1s;
+  }
+  .mic svg { width: 22px; height: 22px; display: block; }
+  .mic:active { transform: scale(.94); }
+  .mic.on {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(109,255,158,.08);
+    box-shadow: 0 0 0 3px rgba(109,255,158,.07), 0 0 28px rgba(109,255,158,.18);
+  }
+  .mic.starting, .mic.busy {
+    color: var(--warn);
+    border-color: rgba(255,209,102,.45);
+    background: rgba(255,209,102,.05);
+    animation: micwait .8s ease-in-out infinite;
+  }
+  @keyframes micwait {
+    0%, 100% { opacity: .45; box-shadow: 0 0 0 0 rgba(255,209,102,.22); }
+    50%      { opacity: 1;   box-shadow: 0 0 0 6px rgba(255,209,102,0); }
+  }
+  .micsend {
+    position: relative;
+    margin-top: 14px;
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 7px 12px;
+    font: inherit;
+    font-size: 9.5px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--faint);
+    cursor: pointer;
+    transition: color .2s, border-color .2s, background .2s;
+  }
+  .micsend.on {
+    color: var(--accent);
+    border-color: rgba(109,255,158,.32);
+    background: rgba(109,255,158,.05);
+  }
+  .mic.on::after {
+    content: "";
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--bad);
+    box-shadow: 0 0 8px var(--bad);
+    animation: pulse 1.2s infinite;
+  }
+  .michint {
+    position: relative;
+    min-height: 14px;
+    padding: 10px 14px;
+    margin-top: 2px;
+    max-width: 80vw;
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--faint);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* ---------- fingerprint slide-to-confirm ---------- */
+  .slide {
+    position: relative;
+    width: 132px;
+    height: 56px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .slide-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0;
+    border-radius: inherit;
+    background: rgba(109,255,158,.10);
+    pointer-events: none;
+    transition: width .18s ease;
+  }
+  .slide.dragging .slide-fill { transition: none; }
+  .slide-hint {
+    position: absolute;
+    right: 13px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 9px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: #3a5343;
+    pointer-events: none;
+    transition: opacity .2s;
+  }
+  .slide.dragging .slide-hint { opacity: 0; transition: none; }
+  .slide.done .slide-hint { opacity: 0; }
+  .slide-knob {
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    width: 48px;
+    height: 48px;
+    margin-top: -24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: 1px solid #223326;
+    background: #111a15;
+    color: var(--dim);
+    cursor: grab;
+    transition: transform .18s ease, color .2s, border-color .2s, box-shadow .2s;
+  }
+  .slide-knob svg { width: 20px; height: 20px; display: block; }
+  .slide.dragging .slide-knob { transition: color .2s, border-color .2s, box-shadow .2s; cursor: grabbing; }
+  .slide.done .slide-knob {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(109,255,158,.08);
+    box-shadow: 0 0 0 3px rgba(109,255,158,.07);
+  }
+
+  /* ---------- stats ---------- */
+  #statsview { flex-direction: column; gap: 10px; }
+  .hero { display: flex; flex-direction: column; gap: 8px; padding-bottom: 10px; }
+  .hero .top { display: flex; justify-content: space-between; align-items: baseline; }
+  .hero .big {
+    font-size: clamp(64px, 21vw, 132px);
+    line-height: .85;
+    font-weight: 600;
+    letter-spacing: -.05em;
+    color: var(--accent);
+    transition: color .3s;
+  }
+  .hero .big .unit { font-size: .3em; letter-spacing: 0; margin-left: 4px; color: var(--dim); }
+  .sparkcanvas { display: block; width: 100%; height: 60px; }
+  .hero .foot { display: flex; justify-content: space-between; font-size: 11px; color: var(--dim); }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .card { display: flex; flex-direction: column; gap: 7px; padding: 12px 14px; }
+  .card .mid { font-size: 26px; font-weight: 600; letter-spacing: -.03em; line-height: 1; }
+  .card .mid small { font-size: 12px; color: var(--dim); font-weight: 400; letter-spacing: 0; }
+  .bar { height: 3px; background: #16211a; border-radius: 2px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width .45s ease, background .3s; }
+  .card .sub { font-size: 10.5px; color: var(--dim); display: flex; justify-content: space-between; gap: 6px; }
+
+  .netrows { display: flex; flex-direction: column; gap: 4px; font-size: 15px; }
+  .netrows div { display: flex; justify-content: space-between; align-items: baseline; }
+  .netrows span:last-child { font-size: 10.5px; color: var(--dim); }
+
+  .procs { flex: 0 1 auto; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
+  .procs-head { display: flex; justify-content: space-between; }
+  ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; justify-content: flex-start; gap: 6px; }
+  li { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: baseline; font-size: 12px; padding: 2px 0; }
+  li .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a9d6ba; }
+  li .c { color: var(--accent); min-width: 46px; text-align: right; }
+  li .m { color: var(--dim); min-width: 46px; text-align: right; }
+
+  /* ---------- footer ---------- */
+  footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 2px;
+  }
+  .tabs { display: flex; gap: 14px; }
+  .tab {
+    appearance: none;
+    background: none;
+    border: 0;
+    padding: 6px 0;
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--faint);
+    cursor: pointer;
+  }
+  .tab.active { color: var(--accent); }
+  #fs { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+  #fs svg { display: block; }
+
+  body[data-view="clock"] #clockview { display: flex; }
+  body[data-view="stats"] #statsview { display: flex; }
+
+  @media (max-height: 700px) {
+    .hero .big { font-size: clamp(52px, 17vw, 96px); }
+    .sparkcanvas { height: 44px; }
+    .card .mid { font-size: 22px; }
+    .procs { min-height: 90px; }
+    .bigtime { font-size: clamp(70px, 24vw, 140px); }
+    .minutebar { margin-top: 16px; }
+  }
+
+  /* Never let the column squash the round bits into ovals. */
+  #clockview > * { flex: 0 0 auto; }
+
+  /* ---------- short screens: phone in landscape ---------- */
+  @media (max-height: 560px) {
+    body {
+      padding: calc(8px + env(safe-area-inset-top)) 16px calc(4px + env(safe-area-inset-bottom));
+      gap: 6px;
+    }
+    #clockview { gap: 3px; }
+    .bigtime { font-size: clamp(40px, min(19vh, 14vw), 104px); }
+    .clockdate { font-size: 10px; letter-spacing: .16em; margin-top: 3px; }
+    .clockmeta { font-size: 9px; gap: 12px; margin-top: 0; }
+    .minutebar { width: min(170px, 38vw); margin-top: 8px; }
+    .microw { margin-top: 6px; gap: 14px; }
+    .mic { width: 60px; height: 60px; }
+    .mic svg { width: 24px; height: 24px; }
+    .slide { width: 148px; height: 60px; }
+    .slide-knob { width: 52px; height: 52px; margin-top: -26px; }
+    .slide-knob svg { width: 22px; height: 22px; }
+    .micsend { margin-top: 5px; padding: 5px 10px; font-size: 8px; letter-spacing: .1em; }
+    .michint { margin-top: 0; padding: 2px 10px; font-size: 9px; min-height: 10px; }
+
+    /* landscape can't fit all four cards; scroll instead of overlapping */
+    #statsview { overflow-y: auto; overscroll-behavior: contain; }
+    #statsview > * { flex: 0 0 auto; }
+    .hero { padding-bottom: 6px; gap: 5px; }
+    .hero .big { font-size: clamp(40px, 14vh, 76px); }
+    .sparkcanvas { height: 34px; }
+    .card .mid { font-size: 20px; }
+    .procs { min-height: 110px; }
+  }
+
+  /* very short landscape (small phones, heavy browser chrome) */
+  @media (max-height: 300px) {
+    #clockview { gap: 2px; }
+    .bigtime { font-size: clamp(32px, 16vh, 64px); }
+    .mic { width: 54px; height: 54px; }
+    .mic svg { width: 22px; height: 22px; }
+    .slide { width: 138px; height: 54px; }
+    .slide-knob { width: 46px; height: 46px; margin-top: -23px; }
+    .slide-knob svg { width: 20px; height: 20px; }
+  }
+</style>
+</head>
+<body data-view="clock">
+  <header>
+    <div class="host"><span class="dot"></span><span id="host">connecting</span></div>
+    <div id="clock">--:--:--</div>
+  </header>
+
+  <!-- clock -->
+  <section class="view" id="clockview">
+    <div class="bigtime"><span id="bigtime">--:--</span><span class="secs" id="bigsecs">00</span></div>
+    <div class="clockdate" id="clockdate">—</div>
+    <div class="clockmeta">
+      <span id="cload">load —</span>
+      <span id="cuptime">—</span>
+    </div>
+    <div class="minutebar"><i id="minutebar"></i></div>
+    <div class="microw">
+      <button class="mic" id="mic" aria-label="Start dictation on the Mac">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="3" width="6" height="11" rx="3"/>
+          <path d="M5 11a7 7 0 0 0 14 0"/>
+          <path d="M12 18v3"/>
+        </svg>
+      </button>
+      <div class="slide" id="slide" role="slider" tabindex="0"
+           aria-label="Slide to type the phrase" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="slide-fill" id="slidefill"></div>
+        <span class="slide-hint">slide</span>
+        <div class="slide-knob" id="finger">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3.6c-4.6 0-8.4 3.7-8.4 8.3 0 2.2-.3 4.3-.9 6.2"/>
+            <path d="M12 6.9c-2.8 0-5.1 2.3-5.1 5.1 0 2.9-.3 5.6-.9 8.1"/>
+            <path d="M12 10.2c-1.1 0-1.9.8-1.9 1.9 0 3.2-.2 6.2-.7 9"/>
+            <path d="M12 3.6c4.6 0 8.4 3.7 8.4 8.3 0 3.1-.3 6.1-.9 8.9"/>
+            <path d="M12 6.9c2.8 0 5.1 2.3 5.1 5.1 0 3.5-.4 6.8-1 9.9"/>
+            <path d="M12 10.2c1.1 0 1.9.8 1.9 1.9 0 3.9-.2 7.5-.8 10.9"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+    <button class="micsend" id="micsend" aria-pressed="true">⏎ send on stop</button>
+    <div class="michint" id="michint">tap to dictate</div>
+  </section>
+
+  <!-- stats -->
+  <section class="view" id="statsview">
+    <section class="panel hero">
+      <div class="top">
+        <span class="label">CPU</span>
+        <span class="label" id="cores">—</span>
+      </div>
+      <div class="big" id="cpu">0<span class="unit">%</span></div>
+      <canvas class="sparkcanvas" id="spark" width="600" height="120"></canvas>
+      <div class="foot">
+        <span id="load">load —</span>
+        <span id="io">disk —</span>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel card">
+        <span class="label">Memory</span>
+        <div class="mid" id="mem">—</div>
+        <div class="bar"><i id="membar"></i></div>
+        <div class="sub"><span id="memdetail">—</span><span id="swap">—</span></div>
+      </div>
+
+      <div class="panel card">
+        <span class="label">Disk</span>
+        <div class="mid" id="disk">—</div>
+        <div class="bar"><i id="diskbar"></i></div>
+        <div class="sub"><span id="diskdetail">—</span><span>home</span></div>
+      </div>
+
+      <div class="panel card" id="netcard">
+        <span class="label">Network</span>
+        <div class="netrows">
+          <div><span id="down">—</span><span>DOWN</span></div>
+          <div><span id="up">—</span><span>UP</span></div>
+        </div>
+      </div>
+
+      <div class="panel card" id="batterycard">
+        <span class="label">Battery</span>
+        <div class="mid" id="battery">—</div>
+        <div class="bar"><i id="battbar"></i></div>
+        <div class="sub"><span id="battstate">—</span><span id="uptime">—</span></div>
+      </div>
+    </section>
+
+    <section class="panel procs">
+      <div class="procs-head">
+        <span class="label">Top processes</span>
+        <span class="label">cpu · mem</span>
+      </div>
+      <ul id="procs"></ul>
+    </section>
+  </section>
+
+  <footer>
+    <div class="tabs">
+      <button class="tab" data-view="clock">Clock</button>
+      <button class="tab" data-view="stats">Stats</button>
+    </div>
+    <button class="tab" id="fs">
+      <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span id="fstext">Full</span>
+    </button>
+  </footer>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var COLORS = { ok: "#6dff9e", warn: "#ffd166", bad: "#ff6b6b" };
+  var hist = [];
+
+  /* ---------- view switching ---------- */
+  var body = document.body;
+
+  function param(name) {
+    var m = new RegExp("[?&]" + name + "=([^&]*)").exec(location.search);
+    return m ? decodeURIComponent(m[1].replace(/\+/g, " ")) : null;
+  }
+
+  function each(list, fn) {
+    for (var i = 0; i < list.length; i++) fn(list[i]);
+  }
+
+  function setView(v) {
+    body.dataset.view = v;
+    try { localStorage.setItem("desknook-view", v); } catch (e) {}
+    each(document.querySelectorAll(".tab[data-view]"), function (b) {
+      b.classList.toggle("active", b.dataset.view === v);
+    });
+  }
+
+  setView(param("view") || localStorage.getItem("desknook-view") || "clock");
+
+  each(document.querySelectorAll(".tab[data-view]"), function (b) {
+    b.addEventListener("click", function () { setView(b.dataset.view); });
+  });
+
+  var touchX = null;
+  document.addEventListener("touchstart", function (e) {
+    touchX = e.changedTouches[0].clientX;
+  }, { passive: true });
+  document.addEventListener("touchend", function (e) {
+    if (touchX === null) return;
+    var dx = e.changedTouches[0].clientX - touchX;
+    touchX = null;
+    if (Math.abs(dx) < 45) return;
+    setView(body.dataset.view === "clock" ? "stats" : "clock");
+  }, { passive: true });
+
+  /* ---------- fullscreen ---------- */
+  var fsBtn = $("fs");
+
+  function fsAvailable() {
+    return document.fullscreenEnabled || document.webkitFullscreenEnabled;
+  }
+
+  function isFs() {
+    return document.fullscreenElement || document.webkitFullscreenElement;
+  }
+
+  function toggleFs() {
+    var el = document.documentElement;
+    if (isFs()) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else {
+      var req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (req) req.call(el);
+      else $("fstext").textContent = "n/a";
+    }
+  }
+
+  fsBtn.addEventListener("click", toggleFs);
+  document.addEventListener("fullscreenchange", function () {
+    $("fstext").textContent = isFs() ? "Exit" : "Full";
+  });
+  document.addEventListener("webkitfullscreenchange", function () {
+    $("fstext").textContent = isFs() ? "Exit" : "Full";
+  });
+
+  /* ---------- dictate ---------- */
+  var micBtn = $("mic"), micHint = $("michint");
+  var micActive = false;            // what we show as recording
+  var micStarting = false;          // Mac warm-up in progress, not listening yet
+  var micError = "", micErrorTimer = null;
+  var micGoTimer = null, micGoAt = 0;
+  var lastTap = 0;
+
+  // Measured on this Mac: ~0.5s between the ⌥Z keystroke and the
+  // recogniser actually opening the mic. Announce "listening" only after.
+  var MAC_WARMUP = 450;
+
+  /* ---------- send on stop ---------- */
+  var sendBtn = $("micsend");
+  var sendOn = true;
+
+  try { sendOn = localStorage.getItem("desknook-send") !== "0"; } catch (err) {}
+
+  function paintSend() {
+    sendBtn.classList.toggle("on", sendOn);
+    sendBtn.setAttribute("aria-pressed", sendOn ? "true" : "false");
+    sendBtn.textContent = sendOn ? "⏎ send on stop" : "⏎ sending off";
+  }
+
+  sendBtn.addEventListener("click", function (e) {
+    if (e) e.preventDefault();
+    sendOn = !sendOn;
+    try { localStorage.setItem("desknook-send", sendOn ? "1" : "0"); } catch (err) {}
+    paintSend();
+    if (navigator.vibrate) navigator.vibrate(15);
+  });
+
+  paintSend();
+
+  var statusText = "", statusUntil = 0, statusTimer = null;
+
+  function setStatus(text, ms) {
+    statusText = text;
+    statusUntil = Date.now() + ms;
+    paintMic();
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(function () {
+      statusUntil = 0;
+      paintMic();
+    }, ms);
+  }
+
+  function paintMic() {
+    micBtn.classList.toggle("starting", micStarting);
+    micBtn.classList.toggle("on", micActive && !micStarting);
+
+    if (micError) micHint.textContent = micError;
+    else if (Date.now() < statusUntil) micHint.textContent = statusText;
+    else if (micStarting) micHint.textContent = "starting…";
+    else if (micActive) micHint.textContent = "listening · tap to stop";
+    else micHint.textContent = "tap to dictate";
+  }
+
+  function renderMic(active) {
+    micActive = !!active;
+    if (!micActive) {
+      micStarting = false;
+      clearTimeout(micGoTimer);
+      micGoAt = 0;
+    }
+    paintMic();
+  }
+
+  // Called once the Mac has accepted the keystroke: hold the "starting"
+  // state for the warm-up, then flip to red and buzz "speak now".
+  function armMicStart() {
+    clearTimeout(micGoTimer);
+    micStarting = true;
+    micGoAt = Date.now() + MAC_WARMUP;
+    paintMic();
+
+    micGoTimer = setTimeout(function () {
+      micStarting = false;
+      paintMic();
+      if (navigator.vibrate) navigator.vibrate(12);
+    }, MAC_WARMUP);
+  }
+
+  function flashHint(msg, ms) {
+    micError = msg;
+    paintMic();
+    clearTimeout(micErrorTimer);
+    micErrorTimer = setTimeout(function () {
+      micError = "";
+      paintMic();
+    }, ms || 1600);
+  }
+
+  function showMicError(msg) {
+    micError = msg;
+    micStarting = false;
+    paintMic();
+    clearTimeout(micErrorTimer);
+    micErrorTimer = setTimeout(function () {
+      micError = "";
+      paintMic();
+    }, 4000);
+  }
+
+  function pollMic() {
+    // Never let a poll undo the start animation mid-flight.
+    if (micStarting || Date.now() < micGoAt) return;
+
+    fetch("/api/mic", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { renderMic(j.active); })
+      .catch(function () {});
+  }
+
+  function micTap(e) {
+    if (e && (e.type === "touchstart" || e.type === "touchend")) e.preventDefault();
+
+    var now = Date.now();
+    if (now - lastTap < 400) return;
+    lastTap = now;
+
+    if (navigator.vibrate) navigator.vibrate(25);
+
+    var want = !micActive;
+    if (want) {
+      // show "starting…" straight away, before the network even answers
+      micActive = true;
+      micStarting = true;
+      micGoAt = now + MAC_WARMUP;
+      paintMic();
+    } else {
+      renderMic(false);
+    }
+
+    fetch("/api/dictate" + (sendOn ? "?enter=1" : ""), { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j.ok) {
+          renderMic(false);
+          showMicError(j.error === "accessibility"
+            ? "needs Accessibility on the Mac"
+            : "could not trigger the Mac");
+          return;
+        }
+        if (j.active) {
+          armMicStart();
+          if (j.dictation === false) showMicError("turn on Dictation (⌥Z)");
+        } else {
+          renderMic(false);
+          if (j.submitted) flashHint("sent ⏎");
+          else if (!sendOn) flashHint("send is off", 1400);
+        }
+      })
+      .catch(function () {
+        renderMic(false);
+        showMicError("link lost");
+      });
+  }
+
+  // touchstart fires on finger-down: ~100ms earlier than click on Android.
+  micBtn.addEventListener("touchstart", micTap, false);
+  micBtn.addEventListener("mousedown", micTap, false);
+  micBtn.addEventListener("click", micTap, false);
+  micHint.addEventListener("touchstart", micTap, false);
+  micHint.addEventListener("click", micTap, false);
+
+  /* ---------- fingerprint: slide to type phrase.txt on the Mac ---------- */
+  var slideEl = $("slide"), slideFill = $("slidefill"), knob = $("finger");
+  var fingerBusy = false, dragging = false, dragStartX = 0, dragX = 0, armed = false;
+
+  function travelOf() {
+    return Math.max(0, slideEl.clientWidth - knob.offsetWidth - 8);
+  }
+
+  function paintSlide() {
+    var travel = travelOf();
+    var pct = travel ? Math.round(dragX / travel * 100) : 0;
+    knob.style.transform = "translateX(" + dragX + "px)";
+    slideFill.style.width = (dragX + knob.offsetWidth + 8) + "px";
+    slideEl.setAttribute("aria-valuenow", pct);
+    knob.classList.toggle("done", pct >= 60);
+
+    // Tick once, the moment it becomes armed — release from here fires.
+    if (pct >= 60 && !armed) {
+      armed = true;
+      if (navigator.vibrate) navigator.vibrate(12);
+    } else if (pct < 60 && armed) {
+      armed = false;
+    }
+  }
+
+  function resetSlide() {
+    dragging = false;
+    dragX = 0;
+    armed = false;
+    slideEl.classList.remove("dragging");
+    knob.classList.remove("done");
+    knob.style.transform = "";
+    slideFill.style.width = "0px";
+    slideEl.setAttribute("aria-valuenow", "0");
+  }
+
+  function slidePos(e) {
+    if (e.touches && e.touches.length) return e.touches[0].clientX;
+    if (e.changedTouches && e.changedTouches.length) return e.changedTouches[0].clientX;
+    return e.clientX;
+  }
+
+  function slideStart(e) {
+    if (fingerBusy) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = true;
+    dragStartX = slidePos(e) - dragX;
+    slideEl.classList.add("dragging");
+    if (navigator.vibrate) navigator.vibrate(8);
+  }
+
+  function slideMove(e) {
+    if (!dragging) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragX = Math.max(0, Math.min(slidePos(e) - dragStartX, travelOf()));
+    paintSlide();
+  }
+
+  function slideEnd(e) {
+    if (!dragging) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = false;
+    slideEl.classList.remove("dragging");
+    slideEl.setAttribute("aria-valuenow", "0");
+
+    // A tap, or a drag that stops short: rewind. Only a real slide fires.
+    if (!travelOf() || dragX < travelOf() * 0.6) {
+      resetSlide();
+      return;
+    }
+
+    fingerBusy = true;
+    dragX = travelOf();
+    paintSlide();
+    if (navigator.vibrate) navigator.vibrate(20);
+    setTimeout(firePhrase, 90);
+  }
+
+  function firePhrase() {
+    setStatus("typing the phrase…", 60000);
+
+    fetch("/api/phrase", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        fingerBusy = false;
+        resetSlide();
+        if (!j.ok) {
+          setStatus(
+            j.error === "accessibility" ? "needs Accessibility on the Mac"
+              : j.error === "missing-file" ? "no phrase.txt"
+              : j.error === "empty-file" ? "phrase.txt is empty"
+              : j.error === "too-long" ? "phrase.txt is too long"
+              : j.error === "busy" ? "already typing"
+              : j.error === "unreadable" ? "cannot read phrase.txt"
+              : "could not type it",
+            5000
+          );
+          return;
+        }
+        setStatus("typed " + j.chars + " + ⏎", 2000);
+        if (navigator.vibrate) navigator.vibrate([10, 60, 10]);
+      })
+      .catch(function () {
+        fingerBusy = false;
+        resetSlide();
+        setStatus("link lost", 4000);
+      });
+  }
+
+  slideEl.addEventListener("touchstart", slideStart, { passive: false });
+  slideEl.addEventListener("touchmove", slideMove, { passive: false });
+  slideEl.addEventListener("touchend", slideEnd, { passive: false });
+  slideEl.addEventListener("touchcancel", function (e) {
+    if (!dragging) return;
+    e.stopPropagation();
+    resetSlide();
+  }, { passive: true });
+
+  slideEl.addEventListener("mousedown", slideStart, false);
+  window.addEventListener("mousemove", slideMove, false);
+  window.addEventListener("mouseup", slideEnd, false);
+
+  pollMic();
+  setInterval(pollMic, 2000);
+
+  /* ---------- clock ---------- */
+  var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  function pad(n) { return n < 10 ? "0" + n : String(n); }
+
+  function tickClock() {
+    var d = new Date();
+    $("bigtime").textContent = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    $("bigsecs").textContent = pad(d.getSeconds());
+    $("clockdate").textContent = DAYS[d.getDay()] + " " + pad(d.getDate()) + " " + MONTHS[d.getMonth()] + " " + d.getFullYear();
+    $("clock").textContent = pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+    $("minutebar").style.width = ((d.getSeconds() + d.getMilliseconds() / 1000) / 60 * 100) + "%";
+  }
+
+  setInterval(tickClock, 250);
+  tickClock();
+
+  /* ---------- stats ---------- */
+  function colorFor(p) {
+    return p >= 85 ? COLORS.bad : p >= 65 ? COLORS.warn : COLORS.ok;
+  }
+
+  function rate(b) {
+    if (!isFinite(b) || b < 1) return "0 B/s";
+    var u = ["B/s", "KB/s", "MB/s", "GB/s"], i = 0;
+    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+    return (b >= 100 ? b.toFixed(0) : b.toFixed(1)) + " " + u[i];
+  }
+
+  function size(b) {
+    var u = ["B", "KB", "MB", "GB", "TB"], i = 0;
+    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+    return (b >= 100 ? b.toFixed(0) : b.toFixed(1)) + u[i];
+  }
+
+  function uptime(s) {
+    var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+    if (d) return "up " + d + "d " + h + "h";
+    if (h) return "up " + h + "h " + m + "m";
+    return "up " + m + "m";
+  }
+
+  function bar(el, p) {
+    el.style.width = Math.max(0, Math.min(100, p)) + "%";
+    el.style.background = colorFor(p);
+  }
+
+  function spark(values) {
+    var c = $("spark"), ctx = c.getContext("2d");
+    var w = c.width, h = c.height;
+    ctx.clearRect(0, 0, w, h);
+    if (values.length < 2) return;
+
+    var max = Math.max(10, Math.max.apply(null, values));
+    var step = w / (values.length - 1);
+    var color = colorFor(values[values.length - 1]);
+
+    function yFor(v) { return h - 6 - (v / max) * (h - 16); }
+
+    ctx.beginPath();
+    for (var i = 0; i < values.length; i++) {
+      var x = i * step;
+      if (i === 0) ctx.moveTo(x, yFor(values[i])); else ctx.lineTo(x, yFor(values[i]));
+    }
+    ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+    ctx.fillStyle = color + "1c";
+    ctx.fill();
+
+    ctx.beginPath();
+    for (var j = 0; j < values.length; j++) {
+      var x2 = j * step;
+      if (j === 0) ctx.moveTo(x2, yFor(values[j])); else ctx.lineTo(x2, yFor(values[j]));
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+  }
+
+  function renderProcs(procs) {
+    var ul = $("procs");
+    ul.innerHTML = "";
+    (procs || []).forEach(function (p) {
+      var li = document.createElement("li");
+      var n = document.createElement("span"); n.className = "n"; n.textContent = p.name;
+      var c = document.createElement("span"); c.className = "c";
+      c.textContent = p.cpu >= 10 ? p.cpu.toFixed(0) + "%" : p.cpu.toFixed(1) + "%";
+      var m = document.createElement("span"); m.className = "m"; m.textContent = p.mem.toFixed(1) + "%";
+      li.appendChild(n); li.appendChild(c); li.appendChild(m);
+      ul.appendChild(li);
+    });
+  }
+
+  function render(s) {
+    body.classList.remove("offline");
+    $("host").textContent = s.host;
+    $("cores").textContent = s.cores + " cores";
+
+    var load = s.load.map(function (n) { return n.toFixed(2); }).join("  ");
+    $("cload").textContent = "load " + load;
+    $("cuptime").textContent = uptime(s.uptime);
+
+    $("cpu").firstChild.nodeValue = Math.round(s.cpu);
+    $("cpu").style.color = colorFor(s.cpu);
+    $("load").textContent = "load " + load;
+    $("io").textContent = "r " + rate(s.disk_io.read) + "  w " + rate(s.disk_io.write);
+
+    hist.push(s.cpu);
+    if (hist.length > 60) hist.shift();
+    spark(hist);
+
+    $("mem").innerHTML = Math.round(s.mem.percent) + "<small>%</small>";
+    bar($("membar"), s.mem.percent);
+    $("memdetail").textContent = size(s.mem.used) + " / " + size(s.mem.total);
+    $("swap").textContent = "swap " + Math.round(s.swap.percent) + "%";
+
+    $("disk").innerHTML = Math.round(s.disk.percent) + "<small>%</small>";
+    bar($("diskbar"), s.disk.percent);
+    $("diskdetail").textContent = size(s.disk.free) + " free";
+
+    $("down").textContent = "↓ " + rate(s.net.down);
+    $("up").textContent = "↑ " + rate(s.net.up);
+
+    if (s.battery) {
+      $("batterycard").style.display = "";
+      $("netcard").style.gridColumn = "";
+      $("battery").innerHTML = Math.round(s.battery.percent) + "<small>%</small>";
+      bar($("battbar"), s.battery.percent);
+      $("battstate").textContent = s.battery.plugged ? "⚡ charging" : "on battery";
+      $("uptime").textContent = uptime(s.uptime);
+    } else {
+      $("batterycard").style.display = "none";
+      $("netcard").style.gridColumn = "span 2";
+    }
+
+    renderProcs(s.procs);
+  }
+
+  function tick() {
+    fetch("/api/stats", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw 0; return r.json(); })
+      .then(render)
+      .catch(function () {
+        body.classList.add("offline");
+        $("host").textContent = "link lost";
+      });
+  }
+
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>
