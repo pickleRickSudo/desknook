@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-"""DeskNook — a tiny, pretty dashboard for a spare phone on your desk.
+"""DeskStats - a tiny, pretty Mac stats page for a spare phone.
 
-Serves one HTML page and a small JSON API: live Mac/PC stats, a clock, a
-dictation toggle, and a slide-to-type phrase button.
-
-    python3 server.py                  # http://<hostname>.local:7777
-    PORT=8080 python3 server.py        # different port
-    HOST=127.0.0.1 python3 server.py   # loopback only
+    python3 server.py              # http://<mac-name>.local:7777
+    PORT=8080 python3 server.py    # different port
 
 Requires: psutil (python3 -m pip install --user psutil)
-
-The dictation and phrase buttons need the helper binaries in bin/ and
-macOS Accessibility permission. Without them everything else still works.
 """
 
 from __future__ import annotations
@@ -31,15 +24,32 @@ except ImportError:  # pragma: no cover
     raise SystemExit("Missing dependency. Run: python3 -m pip install --user psutil")
 
 PORT = int(os.environ.get("PORT", "7777"))
-HOST = os.environ.get("HOST", "0.0.0.0")
 ROOT = Path(__file__).resolve().parent
 REFRESH = 1.0
 DICTATE_HELPER = ROOT / "bin" / "dictate"
-MIC_IDLE_TIMEOUT = 35.0
 SUBMIT_DELAY_MS = 400
 
+# Dictation state is read from CoreAudio, not from a key tap: while macOS
+# Dictation is listening the input device is in use, which any process can
+# query without Accessibility or Input Monitoring permission. That makes the
+# Mac's own ⌥Z and the phone's tap produce exactly the same, observable state.
+MIC_HELPER = ROOT / "bin" / "micactive"
+MIC_POLL = 0.4            # seconds between CoreAudio probes
+MIC_END_GRACE = 1.0       # bridge brief gaps so the UI doesn't flicker
+MIC_AWAIT_TIMEOUT = 4.0   # how long to wait for dictation to really start/stop
+PHONE_TAP_WINDOW = 3.0    # a start this soon after a tap is attributed to the phone
+
+# CoreAudio lags real dictation by ~2.5s on stop (the recogniser keeps the
+# device open while it finalises). DictationIM's own log line lands ~60ms after
+# the keystroke, so the log is the fast signal and CoreAudio is the fallback /
+# sanity check that keeps working even if Apple renames a log string.
+DICTATION_LOG = "/usr/bin/log"
+DICTATION_PREDICATE = 'process == "DictationIM"'
+STOP_MARKERS = ("Keyboard Dictation: pause", "dictationConnectionDidPauseRecognition")
+START_MARKERS = ("showCursorAccessories",)
+
 TYPE_HELPER = ROOT / "bin" / "typephrase"
-PHRASE_FILE = Path(os.environ.get("PHRASE_FILE", ROOT / "phrase.txt"))
+PHRASE_FILE = ROOT / "phrase.txt"
 TYPE_DELAY_MS = 25
 TYPE_MAX_CHARS = 1000
 
@@ -48,6 +58,11 @@ _type_lock = threading.Lock()
 _mic_lock = threading.Lock()
 _mic_active = False
 _mic_changed = 0.0
+_mic_source = "phone"   # "phone" or "keyboard"
+_phone_tap_at = 0.0     # last time the phone asked for a dictation toggle
+_mic_diag = {"live": None, "polls": 0}
+_mic_last_live = 0.0    # last sampled time the mic was open
+_mic_ignore_live = False  # a log "stop" landed but the device is still closing
 
 _lock = threading.Lock()
 _snapshot: dict = {}
@@ -144,13 +159,142 @@ def sampler() -> None:
         prev_net, prev_disk, prev_at = net, dio, now
 
 
-def _mic_state() -> bool:
-    """Whether the phone believes dictation is listening."""
-    global _mic_active
+def _mic_state() -> dict:
+    """Return mic state dict for the phone."""
     with _mic_lock:
-        if _mic_active and time.time() - _mic_changed > MIC_IDLE_TIMEOUT:
+        return {
+            "active": _mic_active,
+            "changed": _mic_changed,
+            "source": _mic_source,
+            "live": _mic_diag["live"],
+            "polls": _mic_diag["polls"],
+        }
+
+
+def _mic_is_live():
+    """Ask CoreAudio whether any input device is recording. None = unknown."""
+    try:
+        out = subprocess.run(
+            [str(MIC_HELPER)], capture_output=True, text=True, timeout=2
+        )
+        if out.returncode == 0:
+            return out.stdout.strip() == "1"
+    except Exception:
+        pass
+    return None
+
+
+def _apply_mic_sample(live, now: float) -> None:
+    """Fold one CoreAudio sample into the shared state.
+
+    Split out of the poll loop so the transition/attribution rules can be
+    tested without hardware.
+    """
+    global _mic_active, _mic_changed, _mic_source, _mic_last_live, _mic_ignore_live
+
+    if live:
+        _mic_last_live = now
+
+    with _mic_lock:
+        _mic_diag["live"] = live
+        _mic_diag["polls"] += 1
+
+        if live is False:
+            # The device really closed, so a pending log-stop is settled.
+            _mic_ignore_live = False
+
+        if live and not _mic_active and not _mic_ignore_live:
+            _mic_active = True
+            _mic_changed = now
+            recent_tap = now - _phone_tap_at < PHONE_TAP_WINDOW
+            _mic_source = "phone" if recent_tap else "keyboard"
+            print(
+                "mic live  %s source=%s" % (time.strftime("%H:%M:%S"), _mic_source),
+                flush=True,
+            )
+        elif live is False and _mic_active and now - _mic_last_live > MIC_END_GRACE:
             _mic_active = False
-        return _mic_active
+            _mic_changed = now
+            print("mic idle  %s (coreaudio)" % time.strftime("%H:%M:%S"), flush=True)
+
+
+def _mic_force(active: bool, why: str) -> None:
+    """Set state from an external signal (the DictationIM log).
+
+    A stop keeps suppressing CoreAudio until the device actually closes,
+    otherwise the ~2.5s finalise tail would resurrect the red dot.
+    """
+    global _mic_active, _mic_changed, _mic_source, _mic_ignore_live
+
+    now = time.time()
+    with _mic_lock:
+        if active:
+            _mic_ignore_live = False
+        else:
+            _mic_ignore_live = True
+        if _mic_active == active:
+            return
+        _mic_active = active
+        _mic_changed = now
+        if active and now - _phone_tap_at >= PHONE_TAP_WINDOW:
+            _mic_source = "keyboard"
+        print(
+            "mic %s  %s (%s)" % ("live" if active else "idle",
+                                 time.strftime("%H:%M:%S"), why),
+            flush=True,
+        )
+
+
+def _dictation_log_watcher() -> None:
+    """Tail DictationIM's log: pause/stop lands ~60ms after the keystroke."""
+    cmd = [DICTATION_LOG, "stream", "--style", "compact",
+           "--predicate", DICTATION_PREDICATE]
+    while True:
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+            )
+        except Exception as exc:
+            print("dictation log watcher disabled: %s" % exc, flush=True)
+            return
+        print("dictation log watcher running (pid %d)" % proc.pid, flush=True)
+        try:
+            for line in proc.stdout:  # type: ignore[union-attr]
+                if any(m in line for m in STOP_MARKERS):
+                    _mic_force(False, "log-stop")
+                elif any(m in line for m in START_MARKERS):
+                    _mic_force(True, "log-start")
+        except Exception:
+            pass
+        proc.wait()
+        print("dictation log watcher exited, restarting in 5s…", flush=True)
+        time.sleep(5)
+
+
+def _mic_watcher() -> None:
+    """Single source of truth: mirror what CoreAudio says into _mic_*.
+
+    macOS Dictation holds the input device open while it listens, so this
+    catches a start/stop no matter who triggered it — the phone tap or ⌥Z on
+    the Mac keyboard.
+    """
+    if not MIC_HELPER.exists():
+        print("bin/micactive not found — external dictation sync disabled", flush=True)
+        return
+
+    while True:
+        _apply_mic_sample(_mic_is_live(), time.time())
+        time.sleep(MIC_POLL)
+
+
+def _await_mic(target: bool) -> bool:
+    """Wait (briefly) for the real dictation state to reach *target*."""
+    deadline = time.time() + MIC_AWAIT_TIMEOUT
+    while time.time() < deadline:
+        if _mic_state()["active"] is target:
+            return target
+        time.sleep(0.12)
+    return _mic_state()["active"]
 
 
 def _dictation_enabled():
@@ -174,7 +318,7 @@ def _dictation_enabled():
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "DeskNook"
+    server_version = "DeskStats"
 
     def _json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode()
@@ -186,7 +330,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self) -> None:  # noqa: N802
-        global _mic_active, _mic_changed
+        global _phone_tap_at
 
         path, _, query = self.path.partition("?")
 
@@ -202,8 +346,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "missing-helper"}, 500)
             return
 
-        with _mic_lock:
-            stopping = _mic_active
+        stopping = _mic_state()["active"]
 
         # Only submit on the stop half of the toggle, and only if asked.
         submit = stopping and "enter=1" in query
@@ -218,6 +361,7 @@ class Handler(BaseHTTPRequestHandler):
         if submit:
             cmd += ["--enter", "--delay", str(SUBMIT_DELAY_MS)]
 
+        _phone_tap_at = time.time()
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         except Exception as exc:
@@ -233,10 +377,9 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        with _mic_lock:
-            _mic_active = not _mic_active
-            _mic_changed = time.time()
-            active = _mic_active
+        # Trust the hardware, not our own guess: wait for the mic to actually
+        # open or close, so the phone shows what the Mac is really doing.
+        active = _await_mic(not stopping)
 
         self._json(
             {
@@ -246,7 +389,9 @@ class Handler(BaseHTTPRequestHandler):
                 "dictation": _dictation_enabled(),
             }
         )
-        print("dictate -> ok active=%s submitted=%s" % (active, submit), flush=True)
+        print(
+            "dictate -> ok active=%s submitted=%s" % (active, submit), flush=True
+        )
 
     def _handle_phrase(self, dry_run: bool = False) -> None:
         """Type phrase.txt into the frontmost app, then press Return."""
@@ -322,7 +467,7 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
 
         if path == "/api/mic":
-            self._json({"active": _mic_state()})
+            self._json(_mic_state())
             return
 
         if path.startswith("/api/stats"):
@@ -347,20 +492,30 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def _start_keywatcher() -> None:
+    """Deprecated: the key tap was replaced by CoreAudio mic-state polling.
+
+    Kept only so old LaunchAgents that still reference it fail loudly instead
+    of silently doing nothing.
+    """
+    print(
+        "keywatcher is no longer used — dictation is tracked via bin/micactive",
+        flush=True,
+    )
+
+
 def main() -> None:
     threading.Thread(target=sampler, daemon=True).start()
+    threading.Thread(target=_mic_watcher, daemon=True).start()
+    threading.Thread(target=_dictation_log_watcher, daemon=True).start()
     time.sleep(1.2)  # let the first sample land
 
-    name = socket.gethostname().split(".")[0]
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print("\n  DeskNook running\n")
-    print(f"  on this machine   http://localhost:{PORT}")
-    if HOST == "0.0.0.0":
-        print(f"  on your phone     http://{name}.local:{PORT}")
-        print("\n  Reachable from your whole local network. See SECURITY.md.")
-    else:
-        print(f"  bound to {HOST} only")
-    print("\n  Ctrl+C to stop.\n")
+    host = socket.gethostname().split(".")[0]
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    print(f"\n  DeskStats running\n", flush=True)
+    print(f"  on this Mac   http://localhost:{PORT}", flush=True)
+    print(f"  on your phone http://{host}.local:{PORT}", flush=True)
+    print(f"\n  Ctrl+C to stop.\n", flush=True)
 
     try:
         server.serve_forever()

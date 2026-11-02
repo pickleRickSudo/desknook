@@ -60,7 +60,7 @@ chmod 600 "$ROOT/phrase.txt"
 chflags hidden "$ROOT/.metadata_never_index" 2>/dev/null || true
 
 # ------------------------------------------------------------- helpers ------
-say "Building the keystroke helpers"
+say "Building the helpers"
 if ! command -v swiftc >/dev/null 2>&1; then
   warn "swiftc not found — skipping the helpers."
   warn "Install Xcode Command Line Tools (xcode-select --install), then re-run"
@@ -69,8 +69,10 @@ else
   mkdir -p "$ROOT/bin"
   swiftc -O "$ROOT/dictate.swift"    -o "$ROOT/bin/dictate"
   swiftc -O "$ROOT/typephrase.swift" -o "$ROOT/bin/typephrase"
-  chmod +x "$ROOT/bin/dictate" "$ROOT/bin/typephrase"
-  say "Built bin/dictate and bin/typephrase"
+  swiftc -O "$ROOT/micactive.swift"  -o "$ROOT/bin/micactive"
+  chmod +x "$ROOT/bin/dictate" "$ROOT/bin/typephrase" "$ROOT/bin/micactive"
+  say "Built bin/dictate, bin/typephrase and bin/micactive"
+  say "bin/micactive needs no permission — it only asks CoreAudio whether the mic is open"
 fi
 
 # --------------------------------------------------------------- agent ------

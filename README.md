@@ -128,13 +128,20 @@ about 400 ms later, so a dictated message gets submitted instead of sitting in
 the input box. It is only sent on the stop, never the start, because Return in a
 terminal runs a command.
 
-State is tracked by the server, not read from macOS — there is no public API for
-"is dictation listening right now". The toggle also expires after 35 s of
-silence, so a lost tap can't leave it stuck in the wrong state.
+State is not a guess: the server mirrors macOS with two permission-free signals.
+`bin/micactive` (CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere`, polled
+every 400 ms) knows whether the input device is open; DictationIM's own log
+(`log stream --predicate 'process == "DictationIM"'`) reports the start and the
+stop within ~60 ms. That is what makes pressing ⌥Z on the Mac's own keyboard
+light the phone up, and what makes a stop go grey immediately instead of after
+macOS finishes finalising.
 
-Measured latency: tap → key ~80 ms, key → Dictation listening ~600 ms. The UI
-holds a short amber "starting" state before it goes red, so the button matches
-what is actually happening.
+Measured latency on a Mac mini: tap → key ~80 ms, key → Dictation listening
+~600 ms, stop keystroke → clean "off" **~0.3 s** (CoreAudio alone would take
+~3 s, because the recogniser holds the input device open while it finalises —
+so the log drives transitions and CoreAudio is the fallback). The UI holds a
+short amber "starting" state before it goes red, so the button matches what is
+actually happening.
 
 ### The phrase slider
 
@@ -204,7 +211,11 @@ Constants worth knowing, at the top of `server.py`:
 | Name | Default | Meaning |
 |---|---|---|
 | `REFRESH` | `1.0` | Seconds between samples |
-| `MIC_IDLE_TIMEOUT` | `35.0` | Seconds before the mic state expires |
+| `MIC_POLL` | `0.4` | Seconds between CoreAudio mic probes |
+| `MIC_END_GRACE` | `1.0` | Silence bridge before CoreAudio may end a session |
+| `MIC_AWAIT_TIMEOUT` | `4.0` | How long `/api/dictate` waits for the real state |
+| `PHONE_TAP_WINDOW` | `3.0` | A start this soon after a tap is credited to the phone |
+| `STOP_MARKERS` / `START_MARKERS` | see `server.py` | DictationIM log lines carrying the fast signal |
 | `SUBMIT_DELAY_MS` | `400` | Wait before Return, so Dictation can finish |
 | `TYPE_DELAY_MS` | `25` | Per-character delay. Raise it if chars drop |
 | `TYPE_MAX_CHARS` | `1000` | Refuse larger phrase files |
@@ -218,7 +229,7 @@ another dashboard.
 |---|---|---|
 | `/` | GET | The HTML page |
 | `/api/stats` | GET | The latest sample as JSON |
-| `/api/mic` | GET | `{"active": bool}` — the server's view of dictation |
+| `/api/mic` | GET | `{"active","changed","source","live","polls"}` — state mirrored from macOS, plus probe diagnostics |
 | `/api/dictate` | POST | Toggle dictation. `?enter=1` also presses Return on stop |
 | `/api/phrase` | POST | Type `phrase.txt`, then Return. `?dry=1` counts characters only |
 

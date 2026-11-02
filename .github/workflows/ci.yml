@@ -21,6 +21,9 @@ jobs:
       - name: Python syntax
         run: python -m py_compile server.py
 
+      - name: Mic-state unit tests
+        run: python tests/test_mic_state.py
+
       - name: Shell syntax
         run: |
           bash -n install.sh

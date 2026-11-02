@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#070a08">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>DeskNook</title>
+<title>DeskStats</title>
 <link rel="icon" href="data:,">
 <style>
   :root {
@@ -563,13 +563,13 @@
 
   function setView(v) {
     body.dataset.view = v;
-    try { localStorage.setItem("desknook-view", v); } catch (e) {}
+    try { localStorage.setItem("deskstats-view", v); } catch (e) {}
     each(document.querySelectorAll(".tab[data-view]"), function (b) {
       b.classList.toggle("active", b.dataset.view === v);
     });
   }
 
-  setView(param("view") || localStorage.getItem("desknook-view") || "clock");
+  setView(param("view") || localStorage.getItem("deskstats-view") || "clock");
 
   each(document.querySelectorAll(".tab[data-view]"), function (b) {
     b.addEventListener("click", function () { setView(b.dataset.view); });
@@ -624,6 +624,8 @@
   var micError = "", micErrorTimer = null;
   var micGoTimer = null, micGoAt = 0;
   var lastTap = 0;
+  var lastMicChanged = 0;           // server's _mic_changed timestamp, last seen
+  var micStopGuardUntil = 0;        // ignore "active" polls while macOS finalizes
 
   // Measured on this Mac: ~0.5s between the ⌥Z keystroke and the
   // recogniser actually opening the mic. Announce "listening" only after.
@@ -633,7 +635,7 @@
   var sendBtn = $("micsend");
   var sendOn = true;
 
-  try { sendOn = localStorage.getItem("desknook-send") !== "0"; } catch (err) {}
+  try { sendOn = localStorage.getItem("deskstats-send") !== "0"; } catch (err) {}
 
   function paintSend() {
     sendBtn.classList.toggle("on", sendOn);
@@ -644,7 +646,7 @@
   sendBtn.addEventListener("click", function (e) {
     if (e) e.preventDefault();
     sendOn = !sendOn;
-    try { localStorage.setItem("desknook-send", sendOn ? "1" : "0"); } catch (err) {}
+    try { localStorage.setItem("deskstats-send", sendOn ? "1" : "0"); } catch (err) {}
     paintSend();
     if (navigator.vibrate) navigator.vibrate(15);
   });
@@ -727,7 +729,32 @@
 
     fetch("/api/mic", { cache: "no-store" })
       .then(function (r) { return r.json(); })
-      .then(function (j) { renderMic(j.active); })
+      .then(function (j) {
+        // Seed lastMicChanged on the very first poll so startup isn't treated as a fresh change.
+        if (!lastMicChanged && j.changed) lastMicChanged = j.changed;
+
+        // Detect a state change that originated on the Mac keyboard (not the phone).
+        var freshChange = j.changed && j.changed !== lastMicChanged;
+        if (freshChange) lastMicChanged = j.changed;
+        if (j.active && !freshChange && Date.now() < micStopGuardUntil) {
+          // Just stopped from this phone; macOS holds the device open ~2 s
+          // while finalizing. Don't let a stale poll re-light the dot.
+          return;
+        }
+        if (j.active && freshChange && j.source === "keyboard" && !micActive) {
+          // ⌥Z on the Mac keyboard. By the time CoreAudio reports the mic as
+          // open the warm-up is already over, so go straight to red + buzz.
+          renderMic(true);
+          if (navigator.vibrate) navigator.vibrate(12);
+          setStatus("started from the Mac (⌥Z)", 1500);
+        } else if (!j.active && freshChange && j.source === "keyboard" && micActive) {
+          // ⌥Z stopped dictation from the Mac side
+          renderMic(false);
+          flashHint("stopped from keyboard", 1400);
+        } else {
+          renderMic(j.active);
+        }
+      })
       .catch(function () {});
   }
 
@@ -749,6 +776,8 @@
       paintMic();
     } else {
       renderMic(false);
+      // macOS keeps the input device open ~2s after a stop; hold the dot off.
+      micStopGuardUntil = Date.now() + 2500;
     }
 
     fetch("/api/dictate" + (sendOn ? "?enter=1" : ""), { method: "POST" })
@@ -761,10 +790,18 @@
             : "could not trigger the Mac");
           return;
         }
-        if (j.active) {
-          armMicStart();
-          if (j.dictation === false) showMicError("turn on Dictation (⌥Z)");
+        if (want) {
+          // Server waited for the mic to really open — trust it either way.
+          if (j.active) {
+            armMicStart();
+            if (j.dictation === false) showMicError("turn on Dictation (⌥Z)");
+          } else {
+            renderMic(false);
+            showMicError("dictation didn't start");
+          }
         } else {
+          // Stopping: the Mac needs a moment to release the mic, so never
+          // let the response flip us back to "starting".
           renderMic(false);
           if (j.submitted) flashHint("sent ⏎");
           else if (!sendOn) flashHint("send is off", 1400);
@@ -909,7 +946,7 @@
   window.addEventListener("mouseup", slideEnd, false);
 
   pollMic();
-  setInterval(pollMic, 2000);
+  setInterval(pollMic, 800);
 
   /* ---------- clock ---------- */
   var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
